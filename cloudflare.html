@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UMIK-1 SPL Monitor | Forensic Telemetry</title>
+  <style>
+    :root {
+      --bg: #0b0c0f;
+      --panel: #14161b;
+      --border: #2a2d35;
+      --text: #e1e3e6;
+      --muted: #8b949e;
+      --accent: #00d084;
+      --warn: #f7b500;
+      --danger: #ff4d4f;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "SF Mono", Monaco, "Cascadia Code", Consolas, monospace;
+      line-height: 1.5;
+      padding: 2rem;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1rem;
+      margin-bottom: 2rem;
+    }
+    h1 { font-size: 1.25rem; letter-spacing: 0.05em; }
+    #status {
+      font-size: 0.75rem;
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+      background: var(--border);
+      color: var(--muted);
+    }
+    #status.connected { background: rgba(0,208,132,0.15); color: var(--accent); }
+    #status.error { background: rgba(255,77,79,0.15); color: var(--danger); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      text-align: center;
+    }
+    .card .label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+    .card .value {
+      font-size: 2.5rem;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    .card.peak .value { color: var(--danger); }
+    .card.leq .value { color: var(--warn); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    thead th {
+      text-align: left;
+      padding: 0.75rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-weight: 500;
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+    }
+    tbody td {
+      padding: 0.6rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+    tbody tr:hover td { background: rgba(255,255,255,0.03); }
+    td.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+    .empty { color: var(--muted); text-align: center; padding: 2rem; }
+
+    @media (max-width: 640px) {
+      body { padding: 1rem; }
+      .card .value { font-size: 1.75rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>UMIK-1 SPL Telemetry</h1>
+    <span id="status">● Connecting...</span>
+  </header>
+
+  <section class="grid">
+    <div class="card">
+      <div class="label">Instant SPL</div>
+      <div class="value" id="val-spl">--.-</div>
+      <div class="label">dB (Z)</div>
+    </div>
+    <div class="card leq">
+      <div class="label">LEQ 60s</div>
+      <div class="value" id="val-leq">--.-</div>
+      <div class="label">dB Equivalent</div>
+    </div>
+    <div class="card peak">
+      <div class="label">Peak Hold</div>
+      <div class="value" id="val-peak">--.-</div>
+      <div class="label">dB Max</div>
+    </div>
+    <div class="card">
+      <div class="label">Readings</div>
+      <div class="value" id="val-count">0</div>
+      <div class="label">Buffered</div>
+    </div>
+  </section>
+
+  <section>
+    <table>
+      <thead>
+        <tr>
+          <th>UTC Time</th>
+          <th class="numeric">SPL (dB)</th>
+          <th class="numeric">LEQ60 (dB)</th>
+          <th class="numeric">Peak (dB)</th>
+          <th>Weighting</th>
+          <th>Device</th>
+        </tr>
+      </thead>
+      <tbody id="table-body">
+        <tr><td colspan="6" class="empty">Waiting for UMIK-1 stream...</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <script>
+    const WS_URL = "wss://YOUR_WORKER.YOUR_SUBDOMAIN.workers.dev"; // <-- UPDATE THIS
+    const statusEl = document.getElementById("status");
+    const tableBody = document.getElementById("table-body");
+    const countEl = document.getElementById("val-count");
+
+    let readings = [];
+    let reconnectTimer = null;
+
+    function fmtTime(ts) {
+      const d = new Date(ts);
+      return d.toISOString().split("T")[1].split(".")[0] + "Z";
+    }
+
+    function updateDOM() {
+      if (readings.length === 0) return;
+      const latest = readings[readings.length - 1];
+      document.getElementById("val-spl").textContent = latest.spl.toFixed(1);
+      document.getElementById("val-leq").textContent = latest.leq60.toFixed(1);
+      document.getElementById("val-peak").textContent = latest.peak.toFixed(1);
+      countEl.textContent = readings.length;
+
+      // Rebuild table (last 50 rows, newest top)
+      const recent = readings.slice(-50).reverse();
+      tableBody.innerHTML = recent.map(r => `
+        <tr>
+          <td>${fmtTime(r.timestamp)}</td>
+          <td class="numeric">${r.spl.toFixed(2)}</td>
+          <td class="numeric">${r.leq60.toFixed(2)}</td>
+          <td class="numeric">${r.peak.toFixed(2)}</td>
+          <td>${r.weighting}</td>
+          <td>${r.device}</td>
+        </tr>
+      `).join("");
+    }
+
+    function connect() {
+      const ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        clearTimeout(reconnectTimer);
+        statusEl.textContent = "● Live";
+        statusEl.className = "connected";
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "reading") {
+            readings.push(msg.data);
+            if (readings.length > 300) readings.shift();
+            updateDOM();
+          } else if (msg.type === "history") {
+            readings = msg.data;
+            updateDOM();
+          }
+        } catch (e) {
+          console.error("Parse error", e);
+        }
+      };
+
+      ws.onerror = () => {
+        statusEl.textContent = "● Error";
+        statusEl.className = "error";
+      };
+
+      ws.onclose = () => {
+        statusEl.textContent = "● Reconnecting...";
+        statusEl.className = "";
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>
