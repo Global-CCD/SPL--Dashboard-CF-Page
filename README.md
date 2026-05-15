@@ -76,7 +76,7 @@ pip install -r requirements.txt
 ### 1.2 Verify UMIK-1 Detection
 
 ```bash
-python -c "import sounddevice as sd; [print(f'{i}: {d['name']}') for i,d in enumerate(sd.query_devices()) if d.get('max_input_channels',0)>0]"
+python -c "import sounddevice as sd; [print(f\"{i}: {d['name']}\") for i,d in enumerate(sd.query_devices()) if d.get('max_input_channels',0)>0]"
 ```
 
 You should see an entry containing `UMIK` or `miniDSP`. If not, check the USB connection and ensure no other application has exclusive control of the device.
